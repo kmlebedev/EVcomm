@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,11 @@ func TestPowerMatrixRecommendsLevel2(t *testing.T) {
 }
 
 func TestExpiryAndRaw(t *testing.T) {
-	gw := serveSim(t, func(c *sim.Mercury230Config) { c.ChannelTTL = 100 * time.Millisecond })
+	// Команды идут подряд, а мост освобождает слот с задержкой: утилита должна
+	// переждать «порт занят», а не падать.
+	gw := serveSim(t, func(c *sim.Mercury230Config) {
+		c.ChannelTTL, c.SlotReleaseDelay = 100*time.Millisecond, 200*time.Millisecond
+	})
 	out, code := runBench(t, gw, "-password", "010101010101", "expiry", "-wait", "200ms")
 	if code != 0 || !strings.Contains(out, "PASS  код 5 → 01h → повтор") {
 		t.Fatalf("expiry exit %d:\n%s", code, out)
@@ -88,6 +93,25 @@ func TestExpiryAndRaw(t *testing.T) {
 	out, code = runBench(t, gw, "-password", "010101010101", "raw", "-len", "4", "03", "00")
 	if code != 1 || !strings.Contains(out, "read-only") {
 		t.Fatalf("write command: exit %d:\n%s", code, out)
+	}
+}
+
+// Если порт занят дольше busyWait, ошибка объясняет причину.
+func TestBusyGatewayReported(t *testing.T) {
+	gw := serveSim(t, nil)
+	c, err := net.Dial("tcp", gw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	time.Sleep(20 * time.Millisecond) // первый клиент занял слот
+	start := time.Now()
+	out, code := runBench(t, gw, "-password", "010101010101", "read")
+	if code != 1 || !strings.Contains(out, "порт моста занят другим мастером") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if d := time.Since(start); d < busyWait {
+		t.Fatalf("gave up after %s, want >= %s", d, busyWait)
 	}
 }
 

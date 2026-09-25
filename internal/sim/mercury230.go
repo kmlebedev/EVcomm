@@ -34,6 +34,9 @@ type Mercury230Config struct {
 	ResponseDelay time.Duration
 	Segment       int
 	SegmentDelay  time.Duration
+	// SlotReleaseDelay — слот TCP остаётся занятым после закрытия соединения клиентом:
+	// мост ещё не обработал FIN, и новое подключение отклоняется.
+	SlotReleaseDelay time.Duration
 }
 
 // DefaultMercury230Config — ART-01 с пофазным учётом, пароли 01×6 / 02×6, мгновенные на уровне 1.
@@ -391,6 +394,10 @@ func (m *Mercury230) Serve(addr string) (net.Addr, func() error, error) {
 			wg.Go(func() {
 				defer func() {
 					_ = c.Close()
+					m.mu.Lock()
+					delay := m.cfg.SlotReleaseDelay
+					m.mu.Unlock()
+					time.Sleep(delay)
 					m.mu.Lock()
 					m.busy = false
 					m.mu.Unlock()
