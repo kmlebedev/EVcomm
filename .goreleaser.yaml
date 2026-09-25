@@ -1,0 +1,53 @@
+# goreleaser v2: бинарники и контрольные суммы для релиза по тегу v*.
+# После правки выполнить "goreleaser check".
+version: 2
+
+project_name: evcomm
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: line-controller
+    main: ./cmd/line-controller
+    binary: line-controller
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+  - id: mr6c-bench
+    main: ./cmd/mr6c-bench
+    binary: mr6c-bench
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+  - id: mr6c-sim
+    main: ./cmd/mr6c-sim
+    binary: mr6c-sim
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [README.md, configs/bench.yaml]
+
+checksum:
+  name_template: SHA256SUMS
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude: ['^docs:', '^test:', '^chore:']
+
+release:
+  draft: false
+  prerelease: auto
