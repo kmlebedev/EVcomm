@@ -1,0 +1,28 @@
+# Реестр стенда: один пост. Для симулятора (cmd/mr6c-sim) — 127.0.0.1:5502.
+# Для реального стенда: gateway — IP шлюза WB-MGE v.3 и порт RS485-1 (502, режим Modbus TCP).
+defaults:
+  lease_ttl: 1s            # исходное предложение, утвердить на этапе 0
+  tick_period: 100ms
+  poll_period: 100ms
+  modbus_timeout: 300ms
+  stale_after: 1s
+  feedback_timeout: 500ms  # ожидание НЗ после записи (время срабатывания контактора + опрос)
+  min_switch_interval: 2s
+  mode_switch_pause: 5s
+  reconnect_min: 200ms
+  reconnect_max: 10s
+  safety:
+    poll_timeout_s: 3      # регистр 8; итого ~ lease_ttl + poll_timeout_s до отпускания
+    source: poll_timeout   # регистр 19: poll_timeout (2) | poll_timeout_or_power (0)
+  limits:
+    phase_max_a: 60        # меньшее из 60 А счётчика и номинала вводного автомата (уточнить)
+    evse_max_a: 32
+
+posts:
+  - id: bench01
+    gateway: 127.0.0.1:5502
+    mr6c_address: 1
+    mode: 3x1
+    has_k4: true
+    input_read: contiguous # split — если модуль не отдаёт адрес 6 при сплошном чтении
+    real_state: true       # прошивка MR6C >= 1.24.0
