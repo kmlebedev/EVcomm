@@ -264,6 +264,7 @@ func TestAdapterNegativePowerAlarm(t *testing.T) {
 func TestAdapterOverTCPGateway(t *testing.T) {
 	s := newSim(t, func(c *sim.Mercury230Config) {
 		c.Segment, c.SegmentDelay = 4, 2*time.Millisecond
+		c.SlotReleaseDelay = 50 * time.Millisecond // FIN обрабатывается не мгновенно
 	})
 	addr, stop, err := s.Serve("127.0.0.1:0")
 	if err != nil {
@@ -291,15 +292,23 @@ func TestAdapterOverTCPGateway(t *testing.T) {
 
 	cancel()
 	<-done
-	// Слот свободен сразу после остановки.
-	c, err := net.DialTimeout("tcp", addr.String(), time.Second)
-	if err != nil {
-		t.Fatal(err)
+	// Слот освобождается, как только мост обработает FIN: 02h и Close при остановке.
+	// Подключение, пришедшее раньше обработки FIN, мост ещё отклоняет — отсюда повторы.
+	var lastErr error
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		c, err := net.DialTimeout("tcp", addr.String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := NewMeter(rtu.NewConn(c, testTiming), MeterConfig{Address: 145})
+		_, lastErr = m.ReadSerial(context.Background())
+		_ = c.Close()
+		if lastErr == nil {
+			return
+		}
+		if !errors.Is(lastErr, rtu.ErrGatewayBusy) {
+			t.Fatalf("after stop: %v", lastErr)
+		}
 	}
-	defer func() { _ = c.Close() }()
-	conn := rtu.NewConn(c, testTiming)
-	m := NewMeter(conn, MeterConfig{Address: 145})
-	if _, err := m.ReadSerial(context.Background()); err != nil {
-		t.Fatalf("slot not released: %v", err)
-	}
+	t.Fatalf("slot not released within 1s: %v", lastErr)
 }
