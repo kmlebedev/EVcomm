@@ -33,6 +33,22 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: [-s -w]
+  - id: mercury230-bench
+    main: ./cmd/mercury230-bench
+    binary: mercury230-bench
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+  - id: mercury230-sim
+    main: ./cmd/mercury230-sim
+    binary: mercury230-sim
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
 
 archives:
   - formats: [tar.gz]

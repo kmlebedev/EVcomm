@@ -64,6 +64,9 @@ const (
 	QualityStale   Quality = "stale"
 	QualityUnknown Quality = "unknown"
 	QualityError   Quality = "error"
+	// QualityDisputed — значение получено, но не прошло проверку достоверности
+	// (монотонность, правдоподобие прироста, сверка с суммой, серийный номер).
+	QualityDisputed Quality = "disputed"
 )
 
 // Observation — значение с источником, временем наблюдения и качеством.
