@@ -1,0 +1,92 @@
+name: Go
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.27.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          # setup-go кэширует модули и сборку; ключ берётся из go.sum.
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted" >&2
+            echo "run: gofmt -w ." >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - name: test
+        # Тесты контроллера идут против симулятора MR6C, включая Modbus TCP на localhost.
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+      - uses: actions/upload-artifact@v4
+        if: matrix.go == '1.27.x'
+        with:
+          name: coverage
+          path: coverage.out
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          # Бинарник линтера должен быть собран Go не старше директивы "go" в
+          # go.mod, иначе он откажется загружать конфиг. v2.13.2 собран go1.27;
+          # повышение go.mod может потребовать поднять и эту версию.
+          version: v2.13.2
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          # Raspberry Pi 5.
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evcomm-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/

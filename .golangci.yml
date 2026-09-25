@@ -1,0 +1,14 @@
+# Проверено с golangci-lint v2.13.2 (эту версию фиксирует CI). Набор линтеров —
+# стандартный; исключения ниже обоснованы кодом проекта.
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # Стенд печатает таблицы через tabwriter: запись копится в буфере, а
+      # ошибка вывода возвращается из Flush, который проверяется.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
