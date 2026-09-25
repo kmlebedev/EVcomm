@@ -23,6 +23,38 @@ func TestLoadBenchConfig(t *testing.T) {
 	if n := len(p.Lines()); n != 4 {
 		t.Fatalf("lines = %d, want 4", n)
 	}
+	m := p.Meter
+	if m == nil || m.Driver != MeterMercury230 || m.Address != 145 || m.Serial != "32874766" || m.ResponseTimeout != 300*time.Millisecond ||
+		m.EnergyPeriod != 15*time.Second || len(m.PhaseMap) != 3 {
+		t.Fatalf("meter: %+v", m)
+	}
+}
+
+func TestMeterDefaultsAndPassword(t *testing.T) {
+	r, err := Parse([]byte(`
+defaults: {meter: {power_period: 2s}}
+posts:
+  - {id: p1, gateway: "10.0.0.1:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "10.0.0.1:503", address: 7, password_env: TEST_MERCURY_PW}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := r.Posts[0].Meter
+	if m.PowerPeriod != 2*time.Second || m.ResponseTimeout != 300*time.Millisecond || m.AccessLevel != 1 ||
+		len(m.PhaseMap) != 3 || m.PhaseMap[0] != domain.LineL1 {
+		t.Fatalf("meter: %+v", m)
+	}
+	if _, err := m.Password(); err == nil {
+		t.Fatal("password from unset env accepted")
+	}
+	t.Setenv("TEST_MERCURY_PW", "313131313131")
+	if pw, err := m.Password(); err != nil || pw != [6]byte{0x31, 0x31, 0x31, 0x31, 0x31, 0x31} {
+		t.Fatalf("pw = % X, %v", pw, err)
+	}
+	t.Setenv("TEST_MERCURY_PW", "111111")
+	if _, err := m.Password(); err == nil {
+		t.Fatal("6-char password accepted: must be 6 raw bytes in hex")
+	}
 }
 
 func TestPostOverridesDefaults(t *testing.T) {
@@ -53,6 +85,13 @@ func TestValidate(t *testing.T) {
 		"bad gateway":           {`{id: p, gateway: "h", mr6c_address: 1}`, "host:port"},
 		"bad address":           {`{id: p, gateway: "h:502", mr6c_address: 0}`, "mr6c_address"},
 		"bus power only source": {`{id: p, gateway: "h:502", mr6c_address: 1, safety: {source: bus_power}}`, "safety.source"},
+		"meter driver":          {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: modbus}}`, "driver"},
+		"meter same port":       {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:502", address: 1, password_env: X}}`, "must differ"},
+		"meter address":         {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:503", address: 254, password_env: X}}`, "1..240"},
+		"meter password env":    {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:503", address: 1}}`, "password_env"},
+		"meter phase map":       {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:503", address: 1, password_env: X, phase_map: [L1, L1, L3]}}`, "permutation"},
+		"meter serial":          {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:503", address: 1, password_env: X, serial: "12ab"}}`, "8 digits"},
+		"meter level":           {`{id: p, gateway: "h:502", mr6c_address: 1, meter: {driver: mercury230, gateway: "h:503", address: 1, password_env: X, access_level: 3}}`, "access_level"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte("posts:\n  - " + tc.yaml))

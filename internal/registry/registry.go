@@ -1,12 +1,15 @@
 // Package registry — реестр постов: единственный источник конфигурации
-// (IP шлюза, адрес MR6C, наличие K4, режим, тайминги, эталон настроек MR6C).
+// (IP шлюза, адрес MR6C, наличие K4, режим, тайминги, эталон настроек MR6C,
+// счётчик поста).
 package registry
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -62,8 +65,64 @@ type Limits struct {
 
 type Defaults struct {
 	Timing `yaml:",inline"`
-	Safety Safety `yaml:"safety"`
-	Limits Limits `yaml:"limits"`
+	Safety Safety      `yaml:"safety"`
+	Limits Limits      `yaml:"limits"`
+	Meter  MeterTiming `yaml:"meter"`
+}
+
+// MeterDriver — способ снятия показаний счётчика поста.
+type MeterDriver string
+
+const (
+	// MeterMercury230 — нативный Go через прозрачный мост WB-MGE (RS485-2, TCP 503).
+	// Порт моста занимает Go: в wb-mqtt-serial его включать нельзя (один мастер).
+	MeterMercury230 MeterDriver = "mercury230"
+	MeterWBMQTT     MeterDriver = "wbmqtt"
+)
+
+// MeterTiming — тайминги опроса счётчика. Нулевые поля в посте берутся из defaults.meter.
+type MeterTiming struct {
+	ConnectTimeout  time.Duration `yaml:"connect_timeout"`
+	ResponseTimeout time.Duration `yaml:"response_timeout"` // 9600: 150 мс ответа + передача + запас
+	FrameGap        time.Duration `yaml:"frame_gap"`        // системный таймаут счётчика, 5 мс при 9600
+	StatusTail      time.Duration `yaml:"status_tail"`      // ожидание «хвоста» после 4 байт с верным CRC
+	PowerPeriod     time.Duration `yaml:"power_period"`
+	EnergyPeriod    time.Duration `yaml:"energy_period"`
+	IdentityPeriod  time.Duration `yaml:"identity_period"`
+	ReconnectMin    time.Duration `yaml:"reconnect_min"`
+	ReconnectMax    time.Duration `yaml:"reconnect_max"`
+}
+
+// Meter — счётчик поста.
+type Meter struct {
+	Driver      MeterDriver `yaml:"driver"`
+	Gateway     string      `yaml:"gateway"` // host:port порта RS485-2 шлюза (прозрачный мост, 503)
+	Address     uint8       `yaml:"address"` // 1…240; 0 и FEh не используются
+	Serial      string      `yaml:"serial"`  // из паспорта, сверяется при подключении
+	AccessLevel uint8       `yaml:"access_level"`
+	// PasswordEnv — переменная окружения с паролем: 12 hex-символов (6 сырых байт).
+	// Пароль в git не хранится.
+	PasswordEnv string `yaml:"password_env"`
+	// GroupPowerBWRI — BWRI группового чтения мощности 08 16 (0 или 1, по итогам стенда).
+	GroupPowerBWRI uint8 `yaml:"group_power_bwri"`
+	// PhaseMap — фаза счётчика 1…3 → линия поста, по монтажной схеме.
+	PhaseMap    []domain.LineID `yaml:"phase_map"`
+	MeterTiming `yaml:",inline"`
+}
+
+// Password читает пароль из окружения.
+func (m Meter) Password() ([6]byte, error) {
+	var pw [6]byte
+	v, ok := os.LookupEnv(m.PasswordEnv)
+	if !ok {
+		return pw, fmt.Errorf("meter password: environment variable %s is not set", m.PasswordEnv)
+	}
+	b, err := hex.DecodeString(strings.TrimSpace(v))
+	if err != nil || len(b) != len(pw) {
+		return pw, fmt.Errorf("meter password: %s must hold 12 hex chars (6 raw bytes)", m.PasswordEnv)
+	}
+	copy(pw[:], b)
+	return pw, nil
 }
 
 // InputRead — способ чтения входов MR6C. Сплошное чтение 0…7 захватывает адрес 6,
@@ -87,6 +146,7 @@ type Post struct {
 	Timing    Timing `yaml:"timing"`
 	Safety    Safety `yaml:"safety"`
 	Limits    Limits `yaml:"limits"`
+	Meter     *Meter `yaml:"meter"` // nil — счётчик не опрашивается
 }
 
 // Line — линия поста и её привязка к ресурсам MR6C.
@@ -135,6 +195,17 @@ func BuiltinDefaults() Defaults {
 		},
 		Safety: Safety{PollTimeoutS: 3, Source: SafetySourcePollTimeout},
 		Limits: Limits{PhaseMaxA: 60, EVSEMaxA: 32},
+		Meter: MeterTiming{
+			ConnectTimeout:  3 * time.Second,
+			ResponseTimeout: 300 * time.Millisecond,
+			FrameGap:        5 * time.Millisecond,
+			StatusTail:      20 * time.Millisecond,
+			PowerPeriod:     time.Second,
+			EnergyPeriod:    15 * time.Second,
+			IdentityPeriod:  time.Hour,
+			ReconnectMin:    500 * time.Millisecond,
+			ReconnectMax:    30 * time.Second,
+		},
 	}
 }
 
@@ -171,8 +242,18 @@ func (r *Registry) applyDefaults() {
 	r.Defaults.Timing = mergeTiming(r.Defaults.Timing, BuiltinDefaults().Timing)
 	r.Defaults.Safety = mergeSafety(r.Defaults.Safety, BuiltinDefaults().Safety)
 	r.Defaults.Limits = mergeLimits(r.Defaults.Limits, BuiltinDefaults().Limits)
+	r.Defaults.Meter = mergeMeterTiming(r.Defaults.Meter, BuiltinDefaults().Meter)
 	for i := range r.Posts {
 		p := &r.Posts[i]
+		if m := p.Meter; m != nil {
+			m.MeterTiming = mergeMeterTiming(m.MeterTiming, r.Defaults.Meter)
+			if m.AccessLevel == 0 {
+				m.AccessLevel = 1
+			}
+			if len(m.PhaseMap) == 0 {
+				m.PhaseMap = []domain.LineID{domain.LineL1, domain.LineL2, domain.LineL3}
+			}
+		}
 		p.Timing = mergeTiming(p.Timing, r.Defaults.Timing)
 		p.Safety = mergeSafety(p.Safety, r.Defaults.Safety)
 		p.Limits = mergeLimits(p.Limits, r.Defaults.Limits)
@@ -223,6 +304,11 @@ func (r *Registry) Validate() error {
 		if p.Limits.EVSEMaxA <= 0 || p.Limits.PhaseMaxA < p.Limits.EVSEMaxA {
 			fail("limits: need 0 < evse_max_a <= phase_max_a")
 		}
+		if p.Meter != nil {
+			if err := validateMeter(*p.Meter, p.Gateway); err != nil {
+				fail("meter: %v", err)
+			}
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -261,6 +347,77 @@ func mergeTiming(t, d Timing) Timing {
 	def(&t.FeedbackTimeout, d.FeedbackTimeout)
 	def(&t.MinSwitchInterval, d.MinSwitchInterval)
 	def(&t.ModeSwitchPause, d.ModeSwitchPause)
+	def(&t.ReconnectMin, d.ReconnectMin)
+	def(&t.ReconnectMax, d.ReconnectMax)
+	return t
+}
+
+func validateMeter(m Meter, mr6cGateway string) error {
+	switch m.Driver {
+	case MeterMercury230:
+	case MeterWBMQTT:
+		return nil // параметры wb-mqtt-serial — этап 2 дорожной карты
+	default:
+		return fmt.Errorf("driver must be %q or %q", MeterMercury230, MeterWBMQTT)
+	}
+	if _, _, err := net.SplitHostPort(m.Gateway); err != nil {
+		return fmt.Errorf("gateway must be host:port: %v", err)
+	}
+	if m.Gateway == mr6cGateway {
+		return errors.New("gateway must differ from the MR6C gateway port (RS485-2 transparent bridge, not RS485-1)")
+	}
+	if m.Address < 1 || m.Address > 240 {
+		return errors.New("address must be 1..240")
+	}
+	if m.AccessLevel != 1 && m.AccessLevel != 2 {
+		return errors.New("access_level must be 1 or 2")
+	}
+	if m.PasswordEnv == "" {
+		return errors.New("password_env is required")
+	}
+	if m.GroupPowerBWRI > 1 {
+		return errors.New("group_power_bwri must be 0 or 1")
+	}
+	if m.Serial != "" {
+		if len(m.Serial) != 8 || strings.Trim(m.Serial, "0123456789") != "" {
+			return errors.New("serial must be 8 digits")
+		}
+	}
+	if len(m.PhaseMap) != 3 {
+		return errors.New("phase_map must list 3 lines")
+	}
+	seen := map[domain.LineID]bool{}
+	for _, l := range m.PhaseMap {
+		if l != domain.LineL1 && l != domain.LineL2 && l != domain.LineL3 || seen[l] {
+			return errors.New("phase_map must be a permutation of L1, L2, L3")
+		}
+		seen[l] = true
+	}
+	t := m.MeterTiming
+	switch {
+	case t.ResponseTimeout <= 0 || t.PowerPeriod <= 0 || t.EnergyPeriod <= 0 || t.IdentityPeriod <= 0:
+		return errors.New("response_timeout and poll periods must be > 0")
+	case t.ResponseTimeout >= t.PowerPeriod:
+		return errors.New("response_timeout must be < power_period")
+	case t.ReconnectMin <= 0 || t.ReconnectMax < t.ReconnectMin:
+		return errors.New("need 0 < reconnect_min <= reconnect_max")
+	}
+	return nil
+}
+
+func mergeMeterTiming(t, d MeterTiming) MeterTiming {
+	def := func(v *time.Duration, dv time.Duration) {
+		if *v == 0 {
+			*v = dv
+		}
+	}
+	def(&t.ConnectTimeout, d.ConnectTimeout)
+	def(&t.ResponseTimeout, d.ResponseTimeout)
+	def(&t.FrameGap, d.FrameGap)
+	def(&t.StatusTail, d.StatusTail)
+	def(&t.PowerPeriod, d.PowerPeriod)
+	def(&t.EnergyPeriod, d.EnergyPeriod)
+	def(&t.IdentityPeriod, d.IdentityPeriod)
 	def(&t.ReconnectMin, d.ReconnectMin)
 	def(&t.ReconnectMax, d.ReconnectMax)
 	return t
