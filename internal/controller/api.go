@@ -163,7 +163,7 @@ func (p *Post) Status(ctx context.Context) (PostStatus, error) {
 			ID:            p.post.ID,
 			Mode:          p.mode,
 			Link:          p.hw.Status(),
-			LeaseDeadline: p.lease.Deadline(),
+			LeaseDeadline: p.lease.Deadline(now),
 			Snapshot:      p.snap,
 		}
 		if p.snap.Seq != 0 {
