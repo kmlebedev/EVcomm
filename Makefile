@@ -1,7 +1,7 @@
 BIN := bin
-CMDS := line-controller mr6c-bench mr6c-sim gen-serial-config
+CMDS := line-controller mr6c-bench mr6c-sim mercury230-bench mercury230-sim gen-serial-config
 
-.PHONY: all lint test build pi sim bench clean
+.PHONY: all lint test fuzz build pi sim bench meter-sim meter-bench meter-stand clean
 
 all: lint test build
 
@@ -29,6 +29,24 @@ sim:
 
 bench:
 	go run ./cmd/mr6c-bench -registry configs/bench.yaml
+
+# Fuzz декодера кадров «Меркурий 230».
+fuzz:
+	go test -run '^$$' -fuzz FuzzDecode -fuzztime 30s ./internal/hardware/mercury230
+
+# «Меркурий 230»: симулятор за прозрачным мостом и стендовые проверки.
+# make meter-bench ARGS="check"; ARGS="watch -interval 15s -duration 2h -csv run.csv"
+meter-sim:
+	go run ./cmd/mercury230-sim
+
+ARGS ?= check
+meter-bench:
+	go run ./cmd/mercury230-bench -registry configs/bench.yaml $(ARGS)
+
+# Адаптер против реального счётчика: MERCURY230_GATEWAY, MERCURY230_ADDRESS,
+# MERCURY230_PASSWORD, [MERCURY230_SERIAL, MERCURY230_LEVEL, MERCURY230_BWRI].
+meter-stand:
+	go test -count=1 -v -run TestStand ./internal/hardware/mercury230
 
 clean:
 	rm -rf $(BIN)
