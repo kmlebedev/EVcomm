@@ -6,17 +6,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kmlebedev/EVcomm/internal/hardware/mercury230"
 	"github.com/kmlebedev/EVcomm/internal/hardware/mr6c"
 	"github.com/kmlebedev/EVcomm/internal/registry"
 	"github.com/kmlebedev/EVcomm/internal/supervision"
 )
 
-// Station — пост в сборе: аренда, адаптер MR6C и контроллер.
+// Station — пост в сборе: аренда, адаптер MR6C, контроллер и счётчик.
 type Station struct {
 	Post    registry.Post
 	Lease   *supervision.Lease
 	Adapter *mr6c.Adapter
 	Ctl     *Post
+	// Meter — счётчик «Меркурий 230» (driver: mercury230); nil, если не настроен.
+	// Показания пока только собираются: снимки энергии по ON/OFF — этап 2.
+	Meter *mercury230.Adapter
 }
 
 // SafetyConfig переводит эталон реестра в значения регистров.
@@ -44,12 +48,24 @@ func NewStation(p registry.Post, dial mr6c.Dialer, startJitter time.Duration, lo
 		StartJitter:  startJitter,
 		Logger:       logger,
 	})
-	return &Station{
+	st := &Station{
 		Post:    p,
 		Lease:   lease,
 		Adapter: ad,
 		Ctl:     New(Config{Post: p, HW: ad, Lease: lease, Logger: logger}),
 	}
+	if p.Meter != nil && p.Meter.Driver == registry.MeterMercury230 {
+		// Счётчик не влияет на безопасность линий: без пароля пост работает без показаний.
+		if cfg, err := MeterConfig(p, nil, startJitter, logger); err != nil {
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("meter disabled", "post", p.ID, "err", err)
+		} else {
+			st.Meter = mercury230.New(cfg)
+		}
+	}
+	return st
 }
 
 // Run запускает адаптер и контроллер и ждёт их завершения.
@@ -57,6 +73,9 @@ func (s *Station) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = s.Adapter.Run(ctx) })
 	wg.Go(func() { _ = s.Ctl.Run(ctx) })
+	if s.Meter != nil {
+		wg.Go(func() { _ = s.Meter.Run(ctx) })
+	}
 	wg.Wait()
 }
 

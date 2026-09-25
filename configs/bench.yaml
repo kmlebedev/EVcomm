@@ -1,5 +1,7 @@
 # Реестр стенда: один пост. Для симулятора (cmd/mr6c-sim) — 127.0.0.1:5502.
 # Для реального стенда: gateway — IP шлюза WB-MGE v.3 и порт RS485-1 (502, режим Modbus TCP).
+# Счётчик «Меркурий 230»: симулятор cmd/mercury230-sim — 127.0.0.1:5503; реальный
+# стенд — IP шлюза и порт RS485-2 (503, прозрачный мост, 9600 8N1).
 defaults:
   lease_ttl: 1s            # исходное предложение, утвердить на этапе 0
   tick_period: 100ms
@@ -17,6 +19,15 @@ defaults:
   limits:
     phase_max_a: 60        # меньшее из 60 А счётчика и номинала вводного автомата (уточнить)
     evse_max_a: 32
+  meter:
+    response_timeout: 300ms  # 9600; при других скоростях — по табл. 1.1 протокола + передача + запас
+    frame_gap: 5ms
+    status_tail: 20ms
+    power_period: 1s
+    energy_period: 15s
+    identity_period: 1h
+    reconnect_min: 500ms
+    reconnect_max: 30s
 
 posts:
   - id: bench01
@@ -26,3 +37,12 @@ posts:
     has_k4: true
     input_read: contiguous # split — если модуль не отдаёт адрес 6 при сплошном чтении
     real_state: true       # прошивка MR6C >= 1.24.0
+    meter:
+      driver: mercury230        # mercury230 | wbmqtt
+      gateway: 127.0.0.1:5503   # WB-MGE RS485-2, прозрачный мост, 9600 8N1
+      address: 145
+      serial: "32874766"        # из паспорта; сверяется при подключении
+      access_level: 1           # 2, если мгновенные значения недоступны на уровне 1
+      password_env: MERCURY_PW_BENCH01   # 12 hex-символов, не хранится в git (симулятор: 010101010101)
+      group_power_bwri: 0       # BWRI для 08 16 по итогам проверки 5 на стенде
+      phase_map: [L1, L2, L3]   # фаза счётчика 1..3 → линия поста
