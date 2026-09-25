@@ -289,17 +289,43 @@ type session struct {
 	pw    [6]byte
 }
 
+// busyWait — сколько повторять подключение, пока мост отклоняет его как «порт занят».
+// Слот освобождается, когда шлюз обработает FIN прошлого соединения; новое
+// подключение, запущенное сразу после закрытия, может успеть раньше.
+const busyWait = 3 * time.Second
+
+// connect подключается к мосту и проверяет связь (00h, канал не нужен).
+// Молчание счётчика не ошибка подключения: его покажут проверки.
 func (b *bench) connect(ctx context.Context) (*session, error) {
-	conn, err := b.opt.dial(ctx)
-	if err != nil {
-		return nil, err
+	deadline := time.Now().Add(busyWait)
+	for {
+		conn, err := b.opt.dial(ctx)
+		if err != nil {
+			return nil, err
+		}
+		s := &session{conn: conn, level: b.opt.level}
+		if b.opt.password != nil {
+			s.pw = *b.opt.password
+		}
+		s.use(b, s.level, s.pw)
+		err = s.m.Ping(ctx)
+		if err == nil || mercury230.Classify(err) == mercury230.KindLink {
+			return s, nil
+		}
+		_ = conn.Close()
+		if !errors.Is(err, rtu.ErrGatewayBusy) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%w — порт моста занят другим мастером (wb-mqtt-serial, homeui, второй экземпляр Go) "+
+				"или ещё не освобождён после обрыва связи (до ~20 с)", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	s := &session{conn: conn, level: b.opt.level}
-	if b.opt.password != nil {
-		s.pw = *b.opt.password
-	}
-	s.m = mercury230.NewMeter(conn, mercury230.MeterConfig{Address: b.opt.address, AccessLevel: s.level, Password: s.pw, Trace: b.trace})
-	return s, nil
 }
 
 func (s *session) close() {
